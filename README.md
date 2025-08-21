@@ -19,9 +19,21 @@ This is an improved version of the on-stop template with proper git authenticati
 - Tokens are always fresh and not subject to expiration during long-running workspaces
 - When pushing changes on workspace stop, the script:
   1. Calls `coder external-auth access-token GH` directly to get a fresh GitHub token
-  2. Temporarily modifies the git remote URL to include the token for authentication
-  3. Performs the git push operation
-  4. Immediately restores the original remote URL (removing the token for security)
+  2. Checks the current branch and switches to main/master if needed
+  3. Automatically detects the target remote branch (main or master)
+  4. Sets up proper upstream tracking for the branch
+  5. Temporarily modifies the git remote URL to include the token for authentication
+  6. Performs the git push operation with auto-merge to the main branch
+  7. Uses force-with-lease as fallback if regular push fails
+  8. Immediately restores the original remote URL (removing the token for security)
+
+### Auto-Merge and Branch Management
+- Automatically switches to main/master branch before pushing
+- Creates main branch if it doesn't exist locally
+- Detects whether remote uses 'main' or 'master' as default branch
+- Sets up proper upstream tracking automatically
+- Uses `git push origin HEAD:main` to ensure push goes to the correct branch
+- Includes force-with-lease fallback for cases where fast-forward isn't possible
 
 ### Proper Agent Lifecycle
 - The `run_on_stop` script properly signals completion before the workspace stops
