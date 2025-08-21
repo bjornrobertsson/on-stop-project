@@ -541,7 +541,6 @@ resource "coder_script" "shutdown_script" {
 
   script = <<-EOT
    #!/usr/bin/bash
-   # When debugging this could be detrimental and set -x might help troubleshooting
    set -euo pipefail
    
    # Configuration
@@ -554,33 +553,22 @@ resource "coder_script" "shutdown_script" {
      echo "[$(date '+%Y-%m-%d %H:%M:%S')] $1" | tee -a "$LOG_FILE"
    }
    
-   # Initialize log file
-   mkdir -p "$(dirname "$LOG_FILE")"
-   log "=== Starting on-stop demo script ==="
+   log "=== On-stop demo script started ==="
    
-   # Change to work directory
-   cd "$WORK_DIR" || { log "Failed to change to work directory"; exit 1; }
-   
-   # ========================================
-   # YOUR CUSTOM ON-STOP LOGIC GOES HERE
-   # ========================================
-   
-   log "Running custom on-stop operations..."
-   
-   # Example 1: Check system status
-   log "System uptime: $(uptime)"
+   # Example 1: Basic system information
+   log "System information:"
+   log "Hostname: $(hostname)"
+   log "Uptime: $(uptime)"
    log "Disk usage: $(df -h / | tail -1)"
-   log "Memory usage: $(free -h | grep Mem)"
    
-   # Example 2: Test connectivity
-   if curl -s --max-time 5 https://httpbin.org/get > /dev/null; then
-     log "Internet connectivity: OK"
-   else
-     log "Internet connectivity: FAILED"
-   fi
+   # Example 2: Workspace information
+   log "Workspace information:"
+   log "Workspace name: ${data.coder_workspace.me.name}"
+   log "Workspace owner: ${data.coder_workspace_owner.me.name}"
+   log "Workspace ID: ${data.coder_workspace.me.id}"
    
-   # Example 3: Check Coder API connectivity
-   if curl -s --max-time 5 "$${CODER_AGENT_URL}/api/v2/buildinfo" > /dev/null; then
+   # Example 3: Test Coder API connectivity
+   if curl -s -H "Coder-Session-Token: $${CODER_AGENT_TOKEN}" "$${CODER_URL}/api/v2/workspaces" >/dev/null 2>&1; then
      log "Coder API connectivity: OK"
    else
      log "Coder API connectivity: FAILED"
@@ -609,21 +597,20 @@ resource "coder_script" "shutdown_script" {
          log "Repository has full history"
        fi
        
-       # Example: Create a simple status file
+       # Create a simple status file
        echo "Workspace stopped at $(date)" > workspace-status.txt
        log "Created workspace status file"
        
-       # Example: Commit and push if there are changes (optional)
+       # Commit and push if there are changes
        if [[ -n "$(git status --porcelain)" ]]; then
          log "Found uncommitted changes, creating commit..."
          git add .
          git commit -m "Auto-save on workspace stop - $(date)" 2>&1 | tee -a "$LOG_FILE" || log "Commit failed"
          
-         # Configure git authentication with cached GitHub token
-         CACHE_DIR="/home/coder/.cache/coder"
-         if [[ -f "$CACHE_DIR/github_token" ]]; then
-           log "Configuring git authentication with cached GitHub token"
-           GITHUB_TOKEN=$(cat "$CACHE_DIR/github_token")
+         # Use direct external-auth access (no caching needed)
+         log "Attempting to get GitHub token directly..."
+         if GITHUB_TOKEN=$(coder external-auth access-token GH 2>/dev/null); then
+           log "Successfully obtained GitHub token for authentication"
            
            # Get current remote URL
            CURRENT_URL=$(git remote get-url origin)
@@ -641,24 +628,30 @@ resource "coder_script" "shutdown_script" {
              log "Updated remote URL with authentication token"
              
              # Attempt to push
-             git push 2>&1 | tee -a "$LOG_FILE" || log "Push failed"
-             
-             # Verify push results
-             log "Post-push verification:"
-             log "Current branch after push: $(git branch --show-current 2>/dev/null)"
-             log "Last commit after push: $(git log -1 --oneline 2>/dev/null)"
-             log "Remote tracking branch: $(git rev-parse --abbrev-ref --symbolic-full-name @{u} 2>/dev/null || echo 'no upstream')"
+             if git push 2>&1 | tee -a "$LOG_FILE"; then
+               log "✓ Git push successful!"
+               
+               # Verify push results
+               log "Post-push verification:"
+               log "Current branch after push: $(git branch --show-current 2>/dev/null)"
+               log "Last commit after push: $(git log -1 --oneline 2>/dev/null)"
+               log "Remote tracking branch: $(git rev-parse --abbrev-ref --symbolic-full-name @{u} 2>/dev/null || echo 'no upstream')"
+             else
+               log "✗ Git push failed"
+             fi
              
              # Restore original URL (remove token for security)
              git remote set-url origin "$CURRENT_URL"
              log "Restored original remote URL"
            else
              log "Remote URL is not HTTPS GitHub URL, attempting push without token modification"
-             git push 2>&1 | tee -a "$LOG_FILE" || log "Push failed"
+             git push 2>&1 | tee -a "$LOG_FILE" || log "Push failed without authentication"
            fi
          else
-           log "No cached GitHub token found, attempting push without authentication"
-           git push 2>&1 | tee -a "$LOG_FILE" || log "Push failed"
+           log "✗ Failed to get GitHub token directly"
+           log "This may indicate that GitHub external auth is not configured or the agent cannot access it"
+           log "Attempting push without authentication..."
+           git push 2>&1 | tee -a "$LOG_FILE" || log "Push failed without authentication"
          fi
        else
          log "No uncommitted changes found"
@@ -675,21 +668,18 @@ resource "coder_script" "shutdown_script" {
    # Example 5: Save workspace metadata
    cat > /tmp/workspace-metadata.json << EOF
 {
-  "workspace_name": "$${CODER_WORKSPACE_NAME:-unknown}",
-  "workspace_owner": "$${CODER_WORKSPACE_OWNER:-unknown}",
+  "workspace_name": "${data.coder_workspace.me.name}",
+  "workspace_owner": "${data.coder_workspace_owner.me.name}",
+  "workspace_id": "${data.coder_workspace.me.id}",
   "stopped_at": "$(date -Iseconds)",
-  "agent_url": "$${CODER_AGENT_URL:-unknown}"
+  "hostname": "$(hostname)"
 }
 EOF
    log "Saved workspace metadata to /tmp/workspace-metadata.json"
    
-   # Example 6: Cleanup temporary files (optional)
+   # Example 6: Cleanup temporary files
    log "Cleaning up temporary files..."
-   find /tmp -name "*.tmp" -mtime +1 -delete 2>/dev/null || true
-   
-   # ========================================
-   # END OF CUSTOM LOGIC
-   # ========================================
+   find /tmp -name "*.tmp" -type f -delete 2>/dev/null || true
    
    log "=== On-stop demo script completed successfully ==="
    log "Check $LOG_FILE for full execution details"
@@ -709,36 +699,14 @@ resource "coder_script" "startup_auth" {
     
     # Configuration
     LOG_FILE="/home/coder/startup.log"
-    CACHE_DIR="/home/coder/.cache/coder"
     
     # Logging function
     log() {
-        echo "[$(date '+%Y-%m-%d %H:%M:%S')] $1" | tee -a "$LOG_FILE"
+      echo "[$(date '+%Y-%m-%d %H:%M:%S')] $1" | tee -a "$LOG_FILE"
     }
     
     # Initialize
-    mkdir -p "$CACHE_DIR"
     log "=== Starting workspace setup ==="
-    
-    # Cache external auth tokens for use in shutdown script
-    log "Caching authentication tokens..."
-    
-    # Cache GitHub token if available
-    if coder external-auth access-token GH > "$CACHE_DIR/github_token" 2>/dev/null; then
-        chmod 600 "$CACHE_DIR/github_token"
-        log "Successfully cached GitHub token"
-    else
-        log "GitHub token not available (external auth may not be configured)"
-    fi
-    
-    # Save current session token for shutdown script use
-    if [[ -n "$${CODER_USER_TOKEN:-}" ]]; then
-        echo "$CODER_USER_TOKEN" > "/tmp/logout_token"
-        chmod 600 "/tmp/logout_token"
-        log "Saved session token for shutdown script"
-    else
-        log "Warning: CODER_USER_TOKEN not available"
-    fi
     
     # Create workspace directories
     mkdir -p "/home/coder/src/server"
@@ -756,5 +724,4 @@ resource "coder_script" "startup_auth" {
     fi
     
     log "=== Workspace setup completed ==="
-  EOT
-}
+  EOT}
