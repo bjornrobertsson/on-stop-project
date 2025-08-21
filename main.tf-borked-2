@@ -49,11 +49,7 @@ provider "coder" {
 data "coder_parameter" "git_repo" {
   name         = "git_repo"
   display_name = "Git repository"
-  description  = "Git repository to clone"
-  type         = "string"
   default      = "https://github.com/bjornrobertsson/shallow"
-  mutable      = true
-  icon         = "/icon/git.svg"
 }
 
 # Clone the repository for branch `feat/example`
@@ -93,10 +89,9 @@ data "coder_parameter" "cpu" {
   name         = "cpu"
   display_name = "CPU"
   description  = "The number of CPU cores"
-  type         = "number"
   default      = "2"
-  mutable      = true
   icon         = "/icon/memory.svg"
+  mutable      = true
   option {
     name  = "2 Cores"
     value = "2"
@@ -119,25 +114,24 @@ data "coder_parameter" "memory" {
   name         = "memory"
   display_name = "Memory"
   description  = "The amount of memory in GB"
-  type         = "number"
-  default      = "4"
-  mutable      = true
+  default      = "2"
   icon         = "/icon/memory.svg"
+  mutable      = true
+  option {
+    name  = "2 GB"
+    value = "2"
+  }
   option {
     name  = "4 GB"
     value = "4"
   }
   option {
+    name  = "6 GB"
+    value = "6"
+  }
+  option {
     name  = "8 GB"
     value = "8"
-  }
-  option {
-    name  = "16 GB"
-    value = "16"
-  }
-  option {
-    name  = "32 GB"
-    value = "32"
   }
 }
 
@@ -145,10 +139,10 @@ data "coder_parameter" "home_disk_size" {
   name         = "home_disk_size"
   display_name = "Home disk size"
   description  = "The size of the home disk in GB"
-  type         = "number"
   default      = "10"
-  mutable      = true
-  icon         = "/icon/folder.svg"
+  type         = "number"
+  icon         = "/emojis/1f4be.png"
+  mutable      = false
   validation {
     min = 1
     max = 99999
@@ -157,7 +151,7 @@ data "coder_parameter" "home_disk_size" {
 
 data "coder_parameter" "namespace" {
   name = "Coder Namespace"
-  default = "coder"
+  default = var.namespace
   mutable = false
 }
 
@@ -535,226 +529,107 @@ locals {
 
 resource "coder_script" "shutdown_script" {
   agent_id     = coder_agent.main.id
-  display_name = "On-Stop Demo Script"
+  display_name = "Git Unshallow Script"
   icon         = "/icon/git.svg"
   run_on_stop  = true
-
+  
   script = <<-EOT
    #!/usr/bin/bash
-   # When debugging this could be detrimental and set -x might help troubleshooting
-   set -euo pipefail
-   
-   # Configuration
-   LOG_FILE="/home/coder/shutdown.log"
-   WORK_DIR="/home/coder"
-   GIT_REPO_PATH="src/server/shallow"
-   
-   # Logging function
-   log() {
-     echo "[$(date '+%Y-%m-%d %H:%M:%S')] $1" | tee -a "$LOG_FILE"
-   }
-   
-   # Initialize log file
-   mkdir -p "$(dirname "$LOG_FILE")"
-   log "=== Starting on-stop demo script ==="
-   
-   # Change to work directory
-   cd "$WORK_DIR" || { log "Failed to change to work directory"; exit 1; }
-   
-   # ========================================
-   # YOUR CUSTOM ON-STOP LOGIC GOES HERE
-   # ========================================
-   
-   log "Running custom on-stop operations..."
-   
-   # Example 1: Check system status
-   log "System uptime: $(uptime)"
-   log "Disk usage: $(df -h / | tail -1)"
-   log "Memory usage: $(free -h | grep Mem)"
-   
-   # Example 2: Test connectivity
-   if curl -s --max-time 5 https://httpbin.org/get > /dev/null; then
-     log "Internet connectivity: OK"
-   else
-     log "Internet connectivity: FAILED"
+   set -x
+   set +e
+   echo "Starting shutdown script..."
+   echo "Starting shutdown $(date +%H:%M)" >> /home/coder/logger.txt
+
+   cd /home/coder
+   # Find the latest coder binary
+   coder=$(find /tmp/coder.* -name coder -printf "%T+ %p\n" 2>/dev/null | sort -r | head -n 1 | cut -d' ' -f2)
+
+   # Try to log in with CODER_USER_TOKEN
+   if ! $${coder} login --token="$${CODER_USER_TOKEN}" --url="$${CODER_AGENT_URL}" ; then
+     # Fallback to logout_token if first login fails
+     $${coder} login --token="$(cat /tmp/logout_token)" --url="$${CODER_AGENT_URL}" >> /home/coder/logger.txt
+     echo "Failed USER_TOKEN login, but completed with logout_token" >> /home/coder/logger.txt
+     # Log running Workspaces
+     # $${coder} list | tee -a /home/coder/logger.txt
+     # echo "^^^ Should have a list of Workspaces here" >> /home/coder/logger.txt
    fi
-   
-   # Example 3: Check Coder API connectivity
-   if curl -s --max-time 5 "$${CODER_AGENT_URL}/api/v2/buildinfo" > /dev/null; then
-     log "Coder API connectivity: OK"
+
+   echo "Passed the authentication using session or stored logout_token" >> /home/coder/logger.txt
+   export GITHUB_TOKEN=$(cat /home/coder/.cache/coder/github_token)
+   echo "Using cached GH token 1" >>  /home/coder/logger.txt
+   echo "Using cached GH token 2" | tee -a  /home/coder/logger.txt
+   echo "Using cached GH token 3" >> /home/coder/logger.txt
+
+   # Step 1: Check if src/server/shallow exists
+   if ! cd src/server/shallow  ; then
+     echo "Directory src/server/shallow exists. We are in $(pwd)." | tee -a /home/coder/logger.txt
    else
-     log "Coder API connectivity: FAILED"
-   fi
-   
-   # Example 4: Git repository operations (if it exists)
-   if [[ -d "$GIT_REPO_PATH" ]]; then
-     log "Found Git repository at: $GIT_REPO_PATH"
-     cd "$GIT_REPO_PATH" || { log "Failed to enter git directory"; cd "$WORK_DIR"; }
-     
-     if [[ -d ".git" ]]; then
-       log "Git status:"
-       git status --porcelain 2>&1 | tee -a "$LOG_FILE" || log "Git status failed"
-       
-       log "Current branch: $(git branch --show-current 2>/dev/null || echo 'unknown')"
-       log "All branches: $(git branch -a 2>/dev/null || echo 'no branches')"
-       log "Remote branches: $(git branch -r 2>/dev/null || echo 'no remote branches')"
-       log "Remote URL: $(git remote get-url origin 2>/dev/null || echo 'no remote')"
-       log "Last commit: $(git log -1 --oneline 2>/dev/null || echo 'no commits')"
-       log "Upstream branch: $(git rev-parse --abbrev-ref --symbolic-full-name @{u} 2>/dev/null || echo 'no upstream')"
-       
-       # Check if repository is shallow
-       if git rev-parse --is-shallow-repository >/dev/null 2>&1 && [[ "$(git rev-parse --is-shallow-repository)" == "true" ]]; then
-         log "Repository is shallow (depth limited)"
-       else
-         log "Repository has full history"
-       fi
-       
-       # Example: Create a simple status file
-       echo "Workspace stopped at $(date)" > workspace-status.txt
-       log "Created workspace status file"
-       
-       # Example: Commit and push if there are changes (optional)
-       if [[ -n "$(git status --porcelain)" ]]; then
-         log "Found uncommitted changes, creating commit..."
-         git add .
-         git commit -m "Auto-save on workspace stop - $(date)" 2>&1 | tee -a "$LOG_FILE" || log "Commit failed"
-         
-         # Configure git authentication with cached GitHub token
-         CACHE_DIR="/home/coder/.cache/coder"
-         if [[ -f "$CACHE_DIR/github_token" ]]; then
-           log "Configuring git authentication with cached GitHub token"
-           GITHUB_TOKEN=$(cat "$CACHE_DIR/github_token")
-           
-           # Get current remote URL
-           CURRENT_URL=$(git remote get-url origin)
-           log "Current remote URL: $CURRENT_URL"
-           
-           # If it's an HTTPS URL, modify it to include the token
-           if [[ "$CURRENT_URL" =~ ^https://github.com/ ]]; then
-             # Extract the repo path (everything after github.com/)
-             REPO_PATH=$(echo "$CURRENT_URL" | sed 's|https://github.com/||')
-             # Create authenticated URL
-             AUTH_URL="https://token:$GITHUB_TOKEN@github.com/$REPO_PATH"
-             
-             # Temporarily set the remote URL with token
-             git remote set-url origin "$AUTH_URL"
-             log "Updated remote URL with authentication token"
-             
-             # Attempt to push
-             git push 2>&1 | tee -a "$LOG_FILE" || log "Push failed"
-             
-             # Verify push results
-             log "Post-push verification:"
-             log "Current branch after push: $(git branch --show-current 2>/dev/null)"
-             log "Last commit after push: $(git log -1 --oneline 2>/dev/null)"
-             log "Remote tracking branch: $(git rev-parse --abbrev-ref --symbolic-full-name @{u} 2>/dev/null || echo 'no upstream')"
-             
-             # Restore original URL (remove token for security)
-             git remote set-url origin "$CURRENT_URL"
-             log "Restored original remote URL"
-           else
-             log "Remote URL is not HTTPS GitHub URL, attempting push without token modification"
-             git push 2>&1 | tee -a "$LOG_FILE" || log "Push failed"
-           fi
-         else
-           log "No cached GitHub token found, attempting push without authentication"
-           git push 2>&1 | tee -a "$LOG_FILE" || log "Push failed"
-         fi
-       else
-         log "No uncommitted changes found"
-       fi
+     # Step 2: Move into the directory
+     # cd src/server/shallow || { echo "Failed to enter src/server/shallow directory."; exit 1; }
+     # Step 3: Check if it's a Git repo
+     if ! stat .git ; then
+       echo ".git is not present" | tee -a /home/coder/logger.txt
      else
-       log "Directory exists but is not a Git repository"
+       echo "src/server/shallow is a Git repository."
+       echo "Logging the last commit, $(date +%H:%M)" >> /home/coder/logger.txt
+       git show --pretty="" --name-only >> /home/coder/logger.txt
      fi
-     
-     cd "$WORK_DIR"
-   else
-     log "Git repository not found at: $GIT_REPO_PATH"
+     echo "Will now unshallow" >> /home/coder/logger.txt
    fi
-   
-   # Example 5: Save workspace metadata
-   cat > /tmp/workspace-metadata.json << EOF
-{
-  "workspace_name": "$${CODER_WORKSPACE_NAME:-unknown}",
-  "workspace_owner": "$${CODER_WORKSPACE_OWNER:-unknown}",
-  "stopped_at": "$(date -Iseconds)",
-  "agent_url": "$${CODER_AGENT_URL:-unknown}"
-}
-EOF
-   log "Saved workspace metadata to /tmp/workspace-metadata.json"
-   
-   # Example 6: Cleanup temporary files (optional)
-   log "Cleaning up temporary files..."
-   find /tmp -name "*.tmp" -mtime +1 -delete 2>/dev/null || true
-   
-   # ========================================
-   # END OF CUSTOM LOGIC
-   # ========================================
-   
-   log "=== On-stop demo script completed successfully ==="
-   log "Check $LOG_FILE for full execution details"
+   echo "Moving to unshallow" | tee -a /home/coder/logger.txt
+
+   # Step 4: Check if the repository is a shallow clone
+   CHECK=$( git rev-parse --is-shallow-repository )
+   # This crashes :
+   if git rev-parse --is-shallow-repository ; then
+     echo "[INFO] Repository is a shallow clone. Attempting to unshallow..." | tee -a /home/coder/logger.txt
+
+     # Source auth tokens
+     echo "Sourcing the auth tokens and attempting to login to Coder prior to running Git commands:
+     . /home/coder/.cache/coder/auth_tokens
+     $${coder} login --token="$(cat /tmp/logout_token)" --url="$${CODER_AGENT_URL}" >> /home/coder/logger.txt
+
+     if git fetch --unshallow; then
+       echo "[SUCCESS] Repository has been unshallowed successfully."
+     else
+       echo "[ERROR] Failed to unshallow the repository."
+     fi
+   else
+     echo "Repository is not a shallow clone. No action needed." | tee -a /home/coder/logger.txt
+     echo "Not a shallow clone $(date +%H:%M)" >> /home/coder/logger.txt
+     echo "Making GIT executions - CODER TOKEN: $${CODER_AGENT_TOKEN}" >> /home/coder/logger.txt
+
+     # Generate random filename
+     filename="$(head /dev/urandom | tr -dc A-Za-z0-9 | head -c 8).rand"
+
+     # Create the file
+     cp test2.py "$filename"
+
+     . /home/coder/.cache/coder/auth_tokens
+     $${coder} login --token="$(cat /tmp/logout_token)" --url="$${CODER_AGENT_URL}" >> /home/coder/logger.txt
+
+     # Add, commit, and push
+     git add "$filename" >> /home/coder/logger.txt 2>&1
+     git commit -m "$filename"  >> /home/coder/logger.txt 2>&1
+     git push >> /home/coder/logger.txt 2>&1
+   fi
+   echo "Directory src/server/shallow does not exist. No action taken." | tee -a /home/coder/logger.txt
+   echo "Shutdown script completed." | tee -a /home/coder/logger.txt
   EOT
 }
 
 
 resource "coder_script" "startup_auth" {
   agent_id     = coder_agent.main.id
-  display_name = "Startup Token Caching"
+  display_name = "Cache GitHub Token"
   run_on_start = true
   
   script = <<-EOT
     #!/bin/bash
-    # When debugging this could be detrimental and set -x might help troubleshooting
-    set -euo pipefail
-    
-    # Configuration
-    LOG_FILE="/home/coder/startup.log"
-    CACHE_DIR="/home/coder/.cache/coder"
-    
-    # Logging function
-    log() {
-        echo "[$(date '+%Y-%m-%d %H:%M:%S')] $1" | tee -a "$LOG_FILE"
-    }
-    
-    # Initialize
-    mkdir -p "$CACHE_DIR"
-    log "=== Starting workspace setup ==="
-    
-    # Cache external auth tokens for use in shutdown script
-    log "Caching authentication tokens..."
-    
-    # Cache GitHub token if available
-    if coder external-auth access-token GH > "$CACHE_DIR/github_token" 2>/dev/null; then
-        chmod 600 "$CACHE_DIR/github_token"
-        log "Successfully cached GitHub token"
-    else
-        log "GitHub token not available (external auth may not be configured)"
-    fi
-    
-    # Save current session token for shutdown script use
-    if [[ -n "$${CODER_USER_TOKEN:-}" ]]; then
-        echo "$CODER_USER_TOKEN" > "/tmp/logout_token"
-        chmod 600 "/tmp/logout_token"
-        log "Saved session token for shutdown script"
-    else
-        log "Warning: CODER_USER_TOKEN not available"
-    fi
-    
-    # Create workspace directories
-    mkdir -p "/home/coder/src/server"
-    log "Created workspace directories"
-    
-    # Basic git configuration
-    if ! git config --global user.name >/dev/null 2>&1; then
-        git config --global user.name "$${CODER_WORKSPACE_OWNER:-coder-user}"
-        log "Set Git user name"
-    fi
-    
-    if ! git config --global user.email >/dev/null 2>&1; then
-        git config --global user.email "$${CODER_WORKSPACE_OWNER:-coder-user}@coder.local"
-        log "Set Git user email"
-    fi
-    
-    log "=== Workspace setup completed ==="
+    # Cache the GitHub token during startup when auth is available
+    mkdir -p ~/.cache/coder
+    coder external-auth access-token GH > ~/.cache/coder/github_token
+    chmod 600 ~/.cache/coder/github_token
   EOT
 }
+

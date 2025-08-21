@@ -7,6 +7,39 @@ verified: true
 tags: [kubernetes, container]
 ---
 
+# Test On-Stop Improved Template
+
+This is an improved version of the on-stop template with fixed git authentication.
+
+## Key Improvements
+
+### Fixed Git Authentication
+- The shutdown script now properly configures git authentication using cached GitHub tokens
+- When pushing changes on workspace stop, the script:
+  1. Checks for a cached GitHub token at `/home/coder/.cache/coder/github_token`
+  2. Temporarily modifies the git remote URL to include the token for authentication
+  3. Performs the git push operation
+  4. Restores the original remote URL (removing the token for security)
+
+### Error Handling
+- Better error handling for git operations
+- Detailed logging of authentication steps
+- Fallback behavior when tokens are not available
+
+## Usage
+
+The template will automatically:
+1. Cache GitHub tokens during workspace startup
+2. Use these tokens for git operations during workspace shutdown
+3. Commit and push any uncommitted changes when the workspace stops
+
+## Troubleshooting
+
+If git push fails:
+1. Check that GitHub external auth is properly configured in Coder
+2. Verify the cached token exists: `ls -la /home/coder/.cache/coder/github_token`
+3. Check the shutdown logs: `cat /home/coder/shutdown.log`
+
 # Remote Development on Kubernetes Pods
 
 Provision Kubernetes Pods as [Coder workspaces](https://coder.com/docs/workspaces) with this example template.
