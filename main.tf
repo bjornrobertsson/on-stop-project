@@ -613,10 +613,12 @@ resource "coder_script" "shutdown_script" {
            git add .
            git commit -m "Auto-save on workspace stop - $(date)" 2>&1 | tee -a "$LOG_FILE" || log "Commit failed"
            
-           # Use direct external-auth access (no caching needed)
-           log "Attempting to get GitHub token directly..."
-           if GITHUB_TOKEN=$(coder external-auth access-token GH 2>/dev/null); then
-             log "Successfully obtained GitHub token for authentication"
+           # Use cached GitHub token (workaround for agent authorization issues)
+           log "Attempting to use cached GitHub token..."
+           CACHE_DIR="/home/coder/.cache/coder"
+           if [[ -f "$CACHE_DIR/github_token" ]]; then
+             GITHUB_TOKEN=$(cat "$CACHE_DIR/github_token")
+             log "Successfully loaded cached GitHub token"
              
              # Get current remote URL
              CURRENT_URL=$(git remote get-url origin)
@@ -676,7 +678,7 @@ resource "coder_script" "shutdown_script" {
                log "Updated remote URL with authentication token"
                
                # Attempt to push with auto-merge
-               log "Attempting to push to $TARGET_BRANCH with auto-merge..."
+               log "Attempting to push to $TARGET_BRANCH with cached token..."
                if git push origin HEAD:$TARGET_BRANCH 2>&1 | tee -a "$LOG_FILE"; then
                  log "✓ Git push successful!"
                  
@@ -702,8 +704,8 @@ resource "coder_script" "shutdown_script" {
                git push origin HEAD:$TARGET_BRANCH 2>&1 | tee -a "$LOG_FILE" || log "Push failed without authentication"
              fi
            else
-             log "✗ Failed to get GitHub token directly"
-             log "This may indicate that GitHub external auth is not configured or the agent cannot access it"
+             log "✗ No cached GitHub token found"
+             log "This indicates the token caching during startup failed or external auth is not configured"
              log "Attempting push without authentication..."
              git push 2>&1 | tee -a "$LOG_FILE" || log "Push failed without authentication"
            fi
@@ -756,6 +758,7 @@ resource "coder_script" "startup_auth" {
     
     # Configuration
     LOG_FILE="/home/coder/startup.log"
+    CACHE_DIR="/home/coder/.cache/coder"
     
     # Logging function
     log() {
@@ -763,7 +766,28 @@ resource "coder_script" "startup_auth" {
     }
     
     # Initialize
+    mkdir -p "$CACHE_DIR"
     log "=== Starting workspace setup ==="
+    
+    # Cache external auth tokens for use in shutdown script
+    log "Caching authentication tokens..."
+    
+    # Cache GitHub token if available
+    if coder external-auth access-token GH > "$CACHE_DIR/github_token" 2>/dev/null; then
+        chmod 600 "$CACHE_DIR/github_token"
+        log "Successfully cached GitHub token"
+    else
+        log "GitHub token not available (external auth may not be configured)"
+    fi
+    
+    # Save current session token for shutdown script use
+    if [[ -n "$${CODER_USER_TOKEN:-}" ]]; then
+        echo "$CODER_USER_TOKEN" > "/tmp/logout_token"
+        chmod 600 "/tmp/logout_token"
+        log "Saved session token for shutdown script"
+    else
+        log "Warning: CODER_USER_TOKEN not available"
+    fi
     
     # Create workspace directories
     mkdir -p "/home/coder/src/server"

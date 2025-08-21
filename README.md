@@ -9,25 +9,46 @@ tags: [kubernetes, container]
 
 # Test On-Stop Improved Template
 
-This is an improved version of the on-stop template with proper git authentication that addresses security and reliability concerns.
+This template demonstrates a **workaround** for git authentication during workspace shutdown, addressing a bug where the Coder agent loses authorization before `run_on_stop` scripts complete.
 
-## Key Improvements
+## Current Implementation (Workaround)
 
-### Direct External-Auth Access
-- The shutdown script now uses direct `coder external-auth access-token` calls instead of caching tokens
-- This approach is more secure as tokens are not stored in the workspace
-- Tokens are always fresh and not subject to expiration during long-running workspaces
-- When pushing changes on workspace stop, the script:
-  1. Calls `coder external-auth access-token GH` directly to get a fresh GitHub token
-  2. Checks the current branch and switches to main/master if needed
-  3. Automatically detects the target remote branch (main or master)
-  4. Sets up proper upstream tracking for the branch
-  5. Temporarily modifies the git remote URL to include the token for authentication
-  6. Performs the git push operation with auto-merge to the main branch
-  7. Uses force-with-lease as fallback if regular push fails
-  8. Immediately restores the original remote URL (removing the token for security)
+### Token Caching Approach
+Due to a bug where the agent loses authorization during `run_on_stop` execution, this template uses a workaround:
+- **Startup**: Caches GitHub tokens during workspace startup when external auth is available
+- **Shutdown**: Uses cached tokens for git operations during workspace stop
+- **Security**: Tokens are stored with restricted permissions (600) in `~/.cache/coder/`
 
-### Auto-Merge and Branch Management
+### Process Flow
+1. **Workspace Start**: Cache `coder external-auth access-token GH` to `~/.cache/coder/github_token`
+2. **Workspace Stop**: Use cached token for git authentication instead of live external auth
+3. **Git Operations**: Commit and push any uncommitted changes when workspace stops
+4. **Branch Management**: Automatically switches to main/master branch and handles auto-merge
+
+## Known Issues & Limitations
+
+### Agent Authorization Bug
+This workaround exists because of a bug in Coder where:
+- The agent loses authorization before `run_on_stop` scripts complete
+- `coder external-auth access-token` fails with "Workspace agent not authorized"
+- API connectivity is lost during script execution
+- This violates the documented behavior that scripts should complete before agent shutdown
+
+### Workaround Limitations
+- **Security**: Tokens are stored on disk in the workspace
+- **Expiration**: Tokens may expire during long-running workspaces
+- **Complexity**: Additional startup logic required for token caching
+- **Reliability**: Dependent on successful token caching during startup
+
+## Ideal Solution
+
+The proper fix would be to ensure the agent maintains authorization until `run_on_stop` scripts complete, as documented. This would allow:
+```bash
+# This should work but currently fails:
+GITHUB_TOKEN=$(coder external-auth access-token GH)
+```
+
+## Auto-Merge and Branch Management
 - Automatically switches to main/master branch before pushing
 - Creates main branch if it doesn't exist locally
 - Detects whether remote uses 'main' or 'master' as default branch
@@ -35,12 +56,12 @@ This is an improved version of the on-stop template with proper git authenticati
 - Uses `git push origin HEAD:main` to ensure push goes to the correct branch
 - Includes force-with-lease fallback for cases where fast-forward isn't possible
 
-### Proper Agent Lifecycle
+## Proper Agent Lifecycle
 - The `run_on_stop` script properly signals completion before the workspace stops
 - No token caching during startup eliminates security risks and complexity
 - Direct external-auth access works as long as the agent is running
 
-### Error Handling
+## Error Handling
 - Better error handling for git operations
 - Detailed logging of authentication steps
 - Graceful fallback when external auth is not available
