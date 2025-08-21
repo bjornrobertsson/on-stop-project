@@ -34,6 +34,11 @@ This workaround exists because of a bug in Coder where:
 - API connectivity is lost during script execution
 - This violates the documented behavior that scripts should complete before agent shutdown
 
+**Related GitHub Issues:**
+- https://github.com/coder/coder/issues/19467 - Agent loses authorization before run_on_stop script completes (filed as result of this work)
+- https://github.com/coder/coder/issues/17108
+- https://github.com/coder/coder/issues/13387
+
 ### Workaround Limitations
 - **Security**: Tokens are stored on disk in the workspace
 - **Expiration**: Tokens may expire during long-running workspaces
@@ -47,6 +52,8 @@ The proper fix would be to ensure the agent maintains authorization until `run_o
 # This should work but currently fails:
 GITHUB_TOKEN=$(coder external-auth access-token GH)
 ```
+
+**See `main.tf-desired.txt`** for the clean implementation that should work according to Coder documentation but currently fails due to the agent authorization bug.
 
 ## Auto-Merge and Branch Management
 - Automatically switches to main/master branch before pushing
