@@ -724,4 +724,5 @@ resource "coder_script" "startup_auth" {
     fi
     
     log "=== Workspace setup completed ==="
-  EOT}
+  EOT
+}
