@@ -546,7 +546,7 @@ resource "coder_script" "shutdown_script" {
    # Configuration
    LOG_FILE="/home/coder/shutdown.log"
    WORK_DIR="/home/coder"
-   GIT_REPO_PATH="src/server/shallow"
+   GIT_BASE_DIR="/home/coder/src/server"
    
    # Logging function
    log() {
@@ -574,143 +574,152 @@ resource "coder_script" "shutdown_script" {
      log "Coder API connectivity: FAILED"
    fi
    
-   # Example 4: Git repository operations (if it exists)
-   if [[ -d "$GIT_REPO_PATH" ]]; then
-     log "Found Git repository at: $GIT_REPO_PATH"
-     cd "$GIT_REPO_PATH" || { log "Failed to enter git directory"; cd "$WORK_DIR"; }
+   # Example 4: Find and process Git repository
+   log "Looking for Git repositories in $GIT_BASE_DIR..."
+   
+   if [[ -d "$GIT_BASE_DIR" ]]; then
+     # Find the first git repository in the base directory
+     GIT_REPO_PATH=$(find "$GIT_BASE_DIR" -name ".git" -type d -exec dirname {} \; | head -1)
      
-     if [[ -d ".git" ]]; then
-       log "Git status:"
-       git status --porcelain 2>&1 | tee -a "$LOG_FILE" || log "Git status failed"
+     if [[ -n "$GIT_REPO_PATH" && -d "$GIT_REPO_PATH" ]]; then
+       log "Found Git repository at: $GIT_REPO_PATH"
+       cd "$GIT_REPO_PATH" || { log "Failed to enter git directory"; cd "$WORK_DIR"; }
        
-       log "Current branch: $(git branch --show-current 2>/dev/null || echo 'unknown')"
-       log "All branches: $(git branch -a 2>/dev/null || echo 'no branches')"
-       log "Remote branches: $(git branch -r 2>/dev/null || echo 'no remote branches')"
-       log "Remote URL: $(git remote get-url origin 2>/dev/null || echo 'no remote')"
-       log "Last commit: $(git log -1 --oneline 2>/dev/null || echo 'no commits')"
-       log "Upstream branch: $(git rev-parse --abbrev-ref --symbolic-full-name @{u} 2>/dev/null || echo 'no upstream')"
-       
-       # Check if repository is shallow
-       if git rev-parse --is-shallow-repository >/dev/null 2>&1 && [[ "$(git rev-parse --is-shallow-repository)" == "true" ]]; then
-         log "Repository is shallow (depth limited)"
-       else
-         log "Repository has full history"
-       fi
-       
-       # Create a simple status file
-       echo "Workspace stopped at $(date)" > workspace-status.txt
-       log "Created workspace status file"
-       
-       # Commit and push if there are changes
-       if [[ -n "$(git status --porcelain)" ]]; then
-         log "Found uncommitted changes, creating commit..."
-         git add .
-         git commit -m "Auto-save on workspace stop - $(date)" 2>&1 | tee -a "$LOG_FILE" || log "Commit failed"
+       if [[ -d ".git" ]]; then
+         log "Git status:"
+         git status --porcelain 2>&1 | tee -a "$LOG_FILE" || log "Git status failed"
          
-         # Use direct external-auth access (no caching needed)
-         log "Attempting to get GitHub token directly..."
-         if GITHUB_TOKEN=$(coder external-auth access-token GH 2>/dev/null); then
-           log "Successfully obtained GitHub token for authentication"
+         log "Current branch: $(git branch --show-current 2>/dev/null || echo 'unknown')"
+         log "All branches: $(git branch -a 2>/dev/null || echo 'no branches')"
+         log "Remote branches: $(git branch -r 2>/dev/null || echo 'no remote branches')"
+         log "Remote URL: $(git remote get-url origin 2>/dev/null || echo 'no remote')"
+         log "Last commit: $(git log -1 --oneline 2>/dev/null || echo 'no commits')"
+         log "Upstream branch: $(git rev-parse --abbrev-ref --symbolic-full-name @{u} 2>/dev/null || echo 'no upstream')"
+         
+         # Check if repository is shallow
+         if git rev-parse --is-shallow-repository >/dev/null 2>&1 && [[ "$(git rev-parse --is-shallow-repository)" == "true" ]]; then
+           log "Repository is shallow (depth limited)"
+         else
+           log "Repository has full history"
+         fi
+         
+         # Create a simple status file
+         echo "Workspace stopped at $(date)" > workspace-status.txt
+         log "Created workspace status file"
+         
+         # Commit and push if there are changes
+         if [[ -n "$(git status --porcelain)" ]]; then
+           log "Found uncommitted changes, creating commit..."
+           git add .
+           git commit -m "Auto-save on workspace stop - $(date)" 2>&1 | tee -a "$LOG_FILE" || log "Commit failed"
            
-           # Get current remote URL
-           CURRENT_URL=$(git remote get-url origin)
-           log "Current remote URL: $CURRENT_URL"
-           
-           # Check current branch and switch to main if needed
-           CURRENT_BRANCH=$(git branch --show-current 2>/dev/null || echo 'unknown')
-           log "Current branch: $CURRENT_BRANCH"
-           
-           if [[ "$CURRENT_BRANCH" != "main" && "$CURRENT_BRANCH" != "master" ]]; then
-             log "Not on main/master branch, checking if main branch exists..."
-             if git show-ref --verify --quiet refs/heads/main; then
-               log "Switching to main branch"
-               git checkout main 2>&1 | tee -a "$LOG_FILE" || log "Failed to checkout main"
-             elif git show-ref --verify --quiet refs/heads/master; then
-               log "Switching to master branch"
-               git checkout master 2>&1 | tee -a "$LOG_FILE" || log "Failed to checkout master"
-             else
-               log "Creating and switching to main branch"
-               git checkout -b main 2>&1 | tee -a "$LOG_FILE" || log "Failed to create main branch"
-             fi
+           # Use direct external-auth access (no caching needed)
+           log "Attempting to get GitHub token directly..."
+           if GITHUB_TOKEN=$(coder external-auth access-token GH 2>/dev/null); then
+             log "Successfully obtained GitHub token for authentication"
              
-             # Re-add and commit changes on the correct branch
-             git add .
-             git commit -m "Auto-save on workspace stop - $(date)" 2>&1 | tee -a "$LOG_FILE" || log "Re-commit failed"
-           fi
-           
-           # Ensure we're tracking the remote main branch
-           REMOTE_MAIN_EXISTS=$(git ls-remote --heads origin main 2>/dev/null | wc -l)
-           REMOTE_MASTER_EXISTS=$(git ls-remote --heads origin master 2>/dev/null | wc -l)
-           
-           if [[ "$REMOTE_MAIN_EXISTS" -gt 0 ]]; then
-             TARGET_BRANCH="main"
-           elif [[ "$REMOTE_MASTER_EXISTS" -gt 0 ]]; then
-             TARGET_BRANCH="master"
-           else
-             TARGET_BRANCH="main"  # Default to main for new repos
-           fi
-           
-           log "Target remote branch: $TARGET_BRANCH"
-           
-           # Set upstream tracking if not already set
-           if ! git rev-parse --abbrev-ref --symbolic-full-name @{u} >/dev/null 2>&1; then
-             log "Setting upstream tracking to origin/$TARGET_BRANCH"
-             git branch --set-upstream-to=origin/$TARGET_BRANCH 2>&1 | tee -a "$LOG_FILE" || log "Failed to set upstream"
-           fi
-           
-           # If it's an HTTPS URL, modify it to include the token
-           if [[ "$CURRENT_URL" =~ ^https://github.com/ ]]; then
-             # Extract the repo path (everything after github.com/)
-             REPO_PATH=$(echo "$CURRENT_URL" | sed 's|https://github.com/||')
-             # Create authenticated URL
-             AUTH_URL="https://token:$GITHUB_TOKEN@github.com/$REPO_PATH"
+             # Get current remote URL
+             CURRENT_URL=$(git remote get-url origin)
+             log "Current remote URL: $CURRENT_URL"
              
-             # Temporarily set the remote URL with token
-             git remote set-url origin "$AUTH_URL"
-             log "Updated remote URL with authentication token"
+             # Check current branch and switch to main if needed
+             CURRENT_BRANCH=$(git branch --show-current 2>/dev/null || echo 'unknown')
+             log "Current branch: $CURRENT_BRANCH"
              
-             # Attempt to push with auto-merge
-             log "Attempting to push to $TARGET_BRANCH with auto-merge..."
-             if git push origin HEAD:$TARGET_BRANCH 2>&1 | tee -a "$LOG_FILE"; then
-               log "✓ Git push successful!"
-               
-               # Verify push results
-               log "Post-push verification:"
-               log "Current branch after push: $(git branch --show-current 2>/dev/null)"
-               log "Last commit after push: $(git log -1 --oneline 2>/dev/null)"
-               log "Remote tracking branch: $(git rev-parse --abbrev-ref --symbolic-full-name @{u} 2>/dev/null || echo 'no upstream')"
-             else
-               log "✗ Git push failed, attempting force push..."
-               if git push --force-with-lease origin HEAD:$TARGET_BRANCH 2>&1 | tee -a "$LOG_FILE"; then
-                 log "✓ Force push successful!"
+             if [[ "$CURRENT_BRANCH" != "main" && "$CURRENT_BRANCH" != "master" ]]; then
+               log "Not on main/master branch, checking if main branch exists..."
+               if git show-ref --verify --quiet refs/heads/main; then
+                 log "Switching to main branch"
+                 git checkout main 2>&1 | tee -a "$LOG_FILE" || log "Failed to checkout main"
+               elif git show-ref --verify --quiet refs/heads/master; then
+                 log "Switching to master branch"
+                 git checkout master 2>&1 | tee -a "$LOG_FILE" || log "Failed to checkout master"
                else
-                 log "✗ Force push also failed"
+                 log "Creating and switching to main branch"
+                 git checkout -b main 2>&1 | tee -a "$LOG_FILE" || log "Failed to create main branch"
                fi
+               
+               # Re-add and commit changes on the correct branch
+               git add .
+               git commit -m "Auto-save on workspace stop - $(date)" 2>&1 | tee -a "$LOG_FILE" || log "Re-commit failed"
              fi
              
-             # Restore original URL (remove token for security)
-             git remote set-url origin "$CURRENT_URL"
-             log "Restored original remote URL"
+             # Ensure we're tracking the remote main branch
+             REMOTE_MAIN_EXISTS=$(git ls-remote --heads origin main 2>/dev/null | wc -l)
+             REMOTE_MASTER_EXISTS=$(git ls-remote --heads origin master 2>/dev/null | wc -l)
+             
+             if [[ "$REMOTE_MAIN_EXISTS" -gt 0 ]]; then
+               TARGET_BRANCH="main"
+             elif [[ "$REMOTE_MASTER_EXISTS" -gt 0 ]]; then
+               TARGET_BRANCH="master"
+             else
+               TARGET_BRANCH="main"  # Default to main for new repos
+             fi
+             
+             log "Target remote branch: $TARGET_BRANCH"
+             
+             # Set upstream tracking if not already set
+             if ! git rev-parse --abbrev-ref --symbolic-full-name @{u} >/dev/null 2>&1; then
+               log "Setting upstream tracking to origin/$TARGET_BRANCH"
+               git branch --set-upstream-to=origin/$TARGET_BRANCH 2>&1 | tee -a "$LOG_FILE" || log "Failed to set upstream"
+             fi
+             
+             # If it's an HTTPS URL, modify it to include the token
+             if [[ "$CURRENT_URL" =~ ^https://github.com/ ]]; then
+               # Extract the repo path (everything after github.com/)
+               REPO_PATH=$(echo "$CURRENT_URL" | sed 's|https://github.com/||')
+               # Create authenticated URL
+               AUTH_URL="https://token:$GITHUB_TOKEN@github.com/$REPO_PATH"
+               
+               # Temporarily set the remote URL with token
+               git remote set-url origin "$AUTH_URL"
+               log "Updated remote URL with authentication token"
+               
+               # Attempt to push with auto-merge
+               log "Attempting to push to $TARGET_BRANCH with auto-merge..."
+               if git push origin HEAD:$TARGET_BRANCH 2>&1 | tee -a "$LOG_FILE"; then
+                 log "✓ Git push successful!"
+                 
+                 # Verify push results
+                 log "Post-push verification:"
+                 log "Current branch after push: $(git branch --show-current 2>/dev/null)"
+                 log "Last commit after push: $(git log -1 --oneline 2>/dev/null)"
+                 log "Remote tracking branch: $(git rev-parse --abbrev-ref --symbolic-full-name @{u} 2>/dev/null || echo 'no upstream')"
+               else
+                 log "✗ Git push failed, attempting force push..."
+                 if git push --force-with-lease origin HEAD:$TARGET_BRANCH 2>&1 | tee -a "$LOG_FILE"; then
+                   log "✓ Force push successful!"
+                 else
+                   log "✗ Force push also failed"
+                 fi
+               fi
+               
+               # Restore original URL (remove token for security)
+               git remote set-url origin "$CURRENT_URL"
+               log "Restored original remote URL"
+             else
+               log "Remote URL is not HTTPS GitHub URL, attempting push without token modification"
+               git push origin HEAD:$TARGET_BRANCH 2>&1 | tee -a "$LOG_FILE" || log "Push failed without authentication"
+             fi
            else
-             log "Remote URL is not HTTPS GitHub URL, attempting push without token modification"
-             git push origin HEAD:$TARGET_BRANCH 2>&1 | tee -a "$LOG_FILE" || log "Push failed without authentication"
+             log "✗ Failed to get GitHub token directly"
+             log "This may indicate that GitHub external auth is not configured or the agent cannot access it"
+             log "Attempting push without authentication..."
+             git push 2>&1 | tee -a "$LOG_FILE" || log "Push failed without authentication"
            fi
          else
-           log "✗ Failed to get GitHub token directly"
-           log "This may indicate that GitHub external auth is not configured or the agent cannot access it"
-           log "Attempting push without authentication..."
-           git push 2>&1 | tee -a "$LOG_FILE" || log "Push failed without authentication"
+           log "No uncommitted changes found"
          fi
        else
-         log "No uncommitted changes found"
+         log "Directory exists but is not a Git repository"
        fi
+       
+       cd "$WORK_DIR"
      else
-       log "Directory exists but is not a Git repository"
+       log "Git repository not found at: $GIT_REPO_PATH"
      fi
-     
-     cd "$WORK_DIR"
    else
-     log "Git repository not found at: $GIT_REPO_PATH"
+     log "Git base directory not found: $GIT_BASE_DIR"
    fi
    
    # Example 5: Save workspace metadata
